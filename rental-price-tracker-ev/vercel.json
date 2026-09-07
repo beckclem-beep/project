@@ -1,0 +1,1 @@
+{"$schema":"https://openapi.vercel.sh/vercel.json","functions":{"app/api/hertz/**/*.ts":{"maxDuration":30}}}
