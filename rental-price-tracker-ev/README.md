@@ -15,3 +15,7 @@ Required Vercel environment variable:
 ## Calendrier des prix
 
 Le calendrier compare chaque date du mois pour une location de 1 jour avec départ à 08:00, en ne conservant que les véhicules 100 % électriques (SIPP fuel code E/C). La couleur de chaque journée est calculée par rapport aux prix disponibles du mois : vert = meilleur prix, puis bon/moyen/plus cher, gris = aucun EV disponible.
+
+## Recovery note
+
+The working application is located in this directory so the Vercel project can keep using its configured Root Directory.
