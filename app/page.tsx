@@ -63,7 +63,7 @@ export default function Home(){
 
         if(response.status===429){
           const retryAfter=Number(response.headers.get("Retry-After")||"0");
-          const wait=Math.max(13000,retryAfter*1000||0)*Math.pow(2,attempt);
+          const wait=Math.max(18000,retryAfter*1000||0)*Math.pow(2,attempt);
           setNotice("Limite de requêtes atteinte par Parse. Pause de "+Math.ceil(wait/1000)+" s puis reprise automatique…");
           await sleep(wait);
           continue;
@@ -87,15 +87,25 @@ export default function Home(){
   async function loadCalendar(){
     if(!location.trim()) return;
     setLoading(true); setError(null); setNotice("Analyse progressive pour éviter les limites de l’API…"); setResults({}); setSelectedDate(null); setProgress({done:0,total:scanDates.length});
-    let resolvedOag:string|null=null; let successfulCount=0; let firstError:string|null=null;
+    const cacheKey="hertz-oag-"+location.trim().toLowerCase();
+    let resolvedOag:string|null=null;
+    try{ resolvedOag=window.localStorage.getItem(cacheKey); }catch{}
+    let successfulCount=0;
+    let firstError:string|null=null;
     try{
       if(!scanDates.length){setError("Aucune date à analyser.");return;}
       const dates=scanDates;
       for(let i=0;i<dates.length;i++){
         // Keep a conservative cadence: the calendar uses one Parse request per date.
-        if(i>0) await sleep(13000);
+        if(i>0) await sleep(18000);
         const result=await fetchDay(dates[i],resolvedOag);
-        if(result.success){successfulCount++; if(!resolvedOag&&result.oag) resolvedOag=result.oag;}
+        if(result.success){
+          successfulCount++;
+          if(result.oag){
+            resolvedOag=result.oag;
+            try{ window.localStorage.setItem(cacheKey,result.oag); }catch{}
+          }
+        }
         else if(!firstError) firstError=result.error||"Une recherche a échoué.";
         setProgress({done:i+1,total:dates.length});
       }
