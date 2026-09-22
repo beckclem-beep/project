@@ -11,9 +11,19 @@ function parseDate(date: string) { return new Date(date+"T12:00:00"); }
 function toISODate(d: Date) { const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,"0"); const day=String(d.getDate()).padStart(2,"0"); return y+"-"+m+"-"+day; }
 function addDays(date: string, days: number) { const d=parseDate(date); d.setDate(d.getDate()+days); return toISODate(d); }
 function monthKey(date: Date) { return date.getFullYear()+"-"+date.getMonth(); }
-const money = (value:number, currency="CAD") => new Intl.NumberFormat("fr-CA", {style:"currency", currency, maximumFractionDigits:2}).format(value);
+const money = (value:number, currency="CAD") => new Intl.NumberFormat("fr-CA",{style:"currency",currency,maximumFractionDigits:2}).format(value);
+const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 
-function buildThreeMonths(startDate:string){ const start=parseDate(startDate); const months=[]; for(let offset=0;offset<3;offset++){ const first=new Date(start.getFullYear(),start.getMonth()+offset,1); const last=new Date(start.getFullYear(),start.getMonth()+offset+1,0); const days=[]; for(let day=1;day<=last.getDate();day++){ const current=new Date(first.getFullYear(),first.getMonth(),day); const date=toISODate(current); days.push({date,day,beforeStart:date<startDate}); } months.push({key:monthKey(first),label:new Intl.DateTimeFormat("fr-CA",{month:"long",year:"numeric"}).format(first),firstWeekday:(first.getDay()+6)%7,days}); } return months; }
+function buildThreeMonths(startDate:string){
+  const start=parseDate(startDate); const months=[];
+  for(let offset=0;offset<3;offset++){
+    const first=new Date(start.getFullYear(),start.getMonth()+offset,1);
+    const last=new Date(start.getFullYear(),start.getMonth()+offset+1,0); const days=[];
+    for(let day=1;day<=last.getDate();day++){ const current=new Date(first.getFullYear(),first.getMonth(),day); const date=toISODate(current); days.push({date,day,beforeStart:date<startDate}); }
+    months.push({key:monthKey(first),label:new Intl.DateTimeFormat("fr-CA",{month:"long",year:"numeric"}).format(first),firstWeekday:(first.getDay()+6)%7,days});
+  }
+  return months;
+}
 function percentile(values:number[], value:number){ const sorted=[...values].sort((a,b)=>a-b); if(sorted.length<=1)return 0; const index=sorted.findIndex(v=>v>=value); return (Math.max(0,index)/(sorted.length-1))*100; }
 
 export default function Home(){
@@ -23,6 +33,7 @@ export default function Home(){
   const [days,setDays]=useState("1");
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState<string|null>(null);
+  const [notice,setNotice]=useState<string|null>(null);
   const [results,setResults]=useState<Record<string,DayResult>>({});
   const [selectedDate,setSelectedDate]=useState<string|null>(null);
   const [progress,setProgress]=useState({done:0,total:0});
@@ -32,36 +43,65 @@ export default function Home(){
   const scanDates=useMemo(()=>months.flatMap(m=>m.days.filter(d=>!d.beforeStart).map(d=>d.date)),[months]);
   const loadedPrices=Object.values(results).filter(r=>r.status==="ok"&&Number.isFinite(r.price)).map(r=>r.price as number);
   const selectedResult=selectedDate?results[selectedDate]:null;
-  const selectedVehicles=(selectedResult?.vehicles||[]).map(v=>({ ...v, total:Number(v.pricing?.approximate_total), name:v.make_model||v.vehicle_display_name||"Véhicule électrique", currency:v.pricing?.currency||"CAD" })).filter(v=>Number.isFinite(v.total)).sort((a,b)=>a.total-b.total);
+  const selectedVehicles=(selectedResult?.vehicles||[]).map(v=>({...v,total:Number(v.pricing?.approximate_total),name:v.make_model||v.vehicle_display_name||"Véhicule électrique",currency:v.pricing?.currency||"CAD"})).filter(v=>Number.isFinite(v.total)).sort((a,b)=>a.total-b.total);
 
   async function fetchDay(date:string,oagCode?:string|null){
     setResults(prev=>({...prev,[date]:{date,status:"loading"}}));
     const query=new URLSearchParams({location:location.trim(),pickupDate:date,pickupTime:startTime,dropoffDate:addDays(date,rentalDays),dropoffTime:startTime,minAge:"30",countryCode:"CA"});
     if(oagCode) query.set("oagCode",oagCode);
-    const response=await fetch("/api/hertz/search?"+query.toString(),{cache:"no-store"});
-    const data:SearchResponse=await response.json();
-    if(!response.ok) throw new Error(data.error||"Erreur HTTP "+response.status);
-    const vehicles=Array.isArray(data.vehicles)?data.vehicles:[];
-    const valid=vehicles.map(v=>({vehicle:v,total:Number(v.pricing?.approximate_total),name:v.make_model||v.vehicle_display_name||"Véhicule électrique",currency:v.pricing?.currency||"CAD"})).filter(v=>Number.isFinite(v.total)).sort((a,b)=>a.total-b.total);
-    setResults(prev=>({...prev,[date]:valid.length?{date,status:"ok",price:valid[0].total,vehicle:valid[0].name,currency:valid[0].currency,vehicles}: {date,status:"empty",vehicles:[]}}));
-    return data.oagCode||data.location?.oag_code||oagCode||null;
+
+    for(let attempt=0;attempt<4;attempt++){
+      try{
+        const response=await fetch("/api/hertz/search?"+query.toString(),{cache:"no-store"});
+        const data:SearchResponse=await response.json();
+        if(response.ok){
+          const vehicles=Array.isArray(data.vehicles)?data.vehicles:[];
+          const valid=vehicles.map(v=>({vehicle:v,total:Number(v.pricing?.approximate_total),name:v.make_model||v.vehicle_display_name||"Véhicule électrique",currency:v.pricing?.currency||"CAD"})).filter(v=>Number.isFinite(v.total)).sort((a,b)=>a.total-b.total);
+          setResults(prev=>({...prev,[date]:valid.length?{date,status:"ok",price:valid[0].total,vehicle:valid[0].name,currency:valid[0].currency,vehicles}:{date,status:"empty",vehicles:[]}}));
+          return {oag:data.oagCode||data.location?.oag_code||oagCode||null,success:true};
+        }
+
+        if(response.status===429){
+          const retryAfter=Number(response.headers.get("Retry-After")||"0");
+          const wait=Math.max(13000,retryAfter*1000||0)*Math.pow(2,attempt);
+          setNotice("Limite de requêtes atteinte par Parse. Pause de "+Math.ceil(wait/1000)+" s puis reprise automatique…");
+          await sleep(wait);
+          continue;
+        }
+
+        const message=data.error||"Erreur HTTP "+response.status;
+        setResults(prev=>({...prev,[date]:{date,status:"error"}}));
+        return {oag:oagCode||null,success:false,error:message};
+      }catch(e){
+        if(attempt===3){
+          const message=e instanceof Error?e.message:"Erreur réseau";
+          setResults(prev=>({...prev,[date]:{date,status:"error"}}));
+          return {oag:oagCode||null,success:false,error:message};
+        }
+        await sleep(2500*(attempt+1));
+      }
+    }
+    return {oag:oagCode||null,success:false,error:"Erreur inconnue"};
   }
 
   async function loadCalendar(){
     if(!location.trim()) return;
-    setLoading(true); setError(null); setResults({}); setSelectedDate(null); setProgress({done:0,total:scanDates.length});
-    let resolvedOag:string|null=null; let firstError:string|null=null;
+    setLoading(true); setError(null); setNotice("Analyse progressive pour éviter les limites de l’API…"); setResults({}); setSelectedDate(null); setProgress({done:0,total:scanDates.length});
+    let resolvedOag:string|null=null; let successfulCount=0; let firstError:string|null=null;
     try{
       if(!scanDates.length){setError("Aucune date à analyser.");return;}
-      try{resolvedOag=await fetchDay(scanDates[0]);}catch(e){firstError=e instanceof Error?e.message:"Erreur de recherche.";}
-      setProgress({done:1,total:scanDates.length});
-      for(let i=1;i<scanDates.length;i+=3){
-        const batch=scanDates.slice(i,i+3);
-        const settled=await Promise.allSettled(batch.map(date=>fetchDay(date,resolvedOag)));
-        for(const item of settled){ if(item.status==="fulfilled"&&item.value&&!resolvedOag) resolvedOag=item.value; if(item.status==="rejected"&&!firstError) firstError=item.reason instanceof Error?item.reason.message:"Une recherche a échoué."; }
-        setProgress(p=>({...p,done:Math.min(p.total,p.done+batch.length)}));
+      const dates=scanDates;
+      for(let i=0;i<dates.length;i++){
+        // Keep a conservative cadence: the calendar uses one Parse request per date.
+        if(i>0) await sleep(13000);
+        const result=await fetchDay(dates[i],resolvedOag);
+        if(result.success){successfulCount++; if(!resolvedOag&&result.oag) resolvedOag=result.oag;}
+        else if(!firstError) firstError=result.error||"Une recherche a échoué.";
+        setProgress({done:i+1,total:dates.length});
       }
-      if(firstError&&!loadedPrices.length) setError(firstError);
+      if(firstError&&successfulCount===0) setError(firstError);
+      if(successfulCount>0) setNotice("Analyse terminée. Les couleurs représentent le prix relatif entre les dates trouvées.");
+      else setNotice(null);
     }catch(e){setError(e instanceof Error?e.message:"Une erreur est survenue.");}
     finally{setLoading(false);}
   }
@@ -80,11 +120,12 @@ export default function Home(){
       <div className="summary"><div><span>Retour prévu</span><strong>{endDate} à {startTime}</strong></div><button type="button" onClick={loadCalendar} disabled={!location.trim()||loading}>{loading?"Analyse "+progress.done+"/"+progress.total+"…":"Rechercher les prix sur 3 mois"}</button></div>
     </div>
     {error&&<div className="error">{error}</div>}
+    {notice&&<div className="notice">{notice}</div>}
     {Object.keys(results).length>0&&<><div className="calendar-toolbar"><div><strong>{loadedPrices.length}</strong> dates avec un prix EV</div><div className="legend"><span><i className="dot best"/> Meilleur</span><span><i className="dot good"/> Bon</span><span><i className="dot medium"/> Moyen</span><span><i className="dot high"/> Cher</span><span><i className="dot neutral"/> Indisponible</span></div></div>
       <section className="months">{months.map(month=><article className="month-card" key={month.key}><div className="month-title">{month.label}</div><div className="weekdays">{["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"].map(day=><div key={day}>{day}</div>)}</div><div className="calendar-grid">
         {Array.from({length:month.firstWeekday}).map((_,i)=><div className="blank" key={"blank-"+month.key+"-"+i}/>)}
         {month.days.map(day=>{ const result=results[day.date]; if(day.beforeStart)return <div className="day neutral past" key={day.date}><div className="day-number">{day.day}</div><div className="day-price">—</div></div>; const cls=result?.status==="ok"?getPriceClass(result.price):"neutral"; return <button type="button" key={day.date} className={"day day-button "+cls+(selectedDate===day.date?" selected":"")} onClick={()=>setSelectedDate(day.date)}><div className="day-number">{day.day}</div><div className="day-price">{result?.status==="loading"?"…":result?.status==="ok"?money(result.price||0,result.currency||"CAD"):result?.status==="empty"?"Aucun EV":result?.status==="error"?"Erreur":"—"}</div>{result?.status==="ok"&&<div className="day-vehicle">{result.vehicle}</div>}</button>; })}
       </div></article>)}</section></>}
-    {selectedResult&&<section className="selected-result"><div className="results-head"><div><span className="results-label">DATE SÉLECTIONNÉE</span><h2>{selectedDate}</h2><p>{location} · {startTime} → {addDays(selectedDate||startDate,rentalDays)} à {startTime}</p></div><div className="count">{selectedVehicles.length} EV</div></div>{selectedVehicles.length===0?<div className="empty">Aucun véhicule électrique disponible.</div>:<div className="vehicle-list">{selectedVehicles.map((v,index)=><article className={"vehicle "+(index===0?"vehicle-best":"")} key={(selectedDate||"")+"-"+v.name+"-"+index}>{index===0&&<div><div className="best-badge">PRIX LE PLUS BAS</div><h3>{v.name}</h3><p>{v.sipp_code||"EV"} · 100 % électrique</p></div>}{index!==0&&<div><h3>{v.name}</h3><p>{v.sipp_code||"EV"} · 100 % électrique</p></div>}<div className="vehicle-price">{money(v.total,v.currency)}<small>total estimé</small></div></article>)}</div>}</section>}
+    {selectedResult&&<section className="selected-result"><div className="results-head"><div><span className="results-label">DATE SÉLECTIONNÉE</span><h2>{selectedDate}</h2><p>{location} · {startTime} → {addDays(selectedDate||startDate,rentalDays)} à {startTime}</p></div><div className="count">{selectedVehicles.length} EV</div></div>{selectedVehicles.length===0?<div className="empty">Aucun véhicule électrique disponible.</div>:<div className="vehicle-list">{selectedVehicles.map((v,index)=><article className={"vehicle "+(index===0?"vehicle-best":"")} key={(selectedDate||"")+"-"+v.name+"-"+index}><div>{index===0&&<div className="best-badge">PRIX LE PLUS BAS</div>}<h3>{v.name}</h3><p>{v.sipp_code||"EV"} · 100 % électrique</p></div><div className="vehicle-price">{money(v.total,v.currency)}<small>total estimé</small></div></article>)}</div>}</section>}
   </section></main>;
 }
