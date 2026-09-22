@@ -130,7 +130,13 @@ export async function GET(request: NextRequest) {
       headers,
       cache: "no-store",
     });
-    const vehiclesPayload = await vehiclesResponse.json();
+    const vehiclesText = await vehiclesResponse.text();
+    let vehiclesPayload: any = null;
+    try {
+      vehiclesPayload = JSON.parse(vehiclesText);
+    } catch {
+      vehiclesPayload = { raw: vehiclesText.slice(0, 500) };
+    }
 
     if (!vehiclesResponse.ok) {
       const retryAfter = vehiclesResponse.headers.get("retry-after");
